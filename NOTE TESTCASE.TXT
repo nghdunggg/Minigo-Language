@@ -1,0 +1,394 @@
+testcase:
+ def test_117(self):
+        input = Program([VarDecl("a",BoolType(),BinaryOp(">", IntLiteral(1), IntLiteral(2))),VarDecl("b",BoolType(),BinaryOp("<", FloatLiteral(1.0), FloatLiteral(2.0))),VarDecl("c",BoolType(),BinaryOp("==", StringLiteral("\"1\""), StringLiteral("\"2\""))),VarDecl("d",BoolType(),BinaryOp(">", IntLiteral(1), FloatLiteral(2.0)))])
+        """
+var a boolean = 1 > 2;
+var b boolean = 1.0 < 2.0;
+var c boolean = "1" == "2";
+var d boolean = 1 > 2.0;
+        """
+        self.assertTrue(TestChecker.test(input, "Type Mismatch: BinaryOp(IntLiteral(1),>,FloatLiteral(2.0))", 117))
+
+    def test_118(self):
+        input = Program([VarDecl("a",BoolType(),BinaryOp(">=", IntLiteral(1), IntLiteral(2))),VarDecl("b",BoolType(),BinaryOp("<=", FloatLiteral(1.0), FloatLiteral(2.0))),VarDecl("c",BoolType(),BinaryOp("!=", StringLiteral("\"1\""), StringLiteral("\"2\""))),VarDecl("d",BoolType(),BinaryOp(">", IntLiteral(1), BooleanLiteral(True)))])
+        """
+var a boolean = 1 >= 2;
+var b boolean = 1.0 <= 2.0;
+var c boolean = "1" != "2";
+var d boolean = 1 > true;
+        """
+        self.assertTrue(TestChecker.test(input, "Type Mismatch: BinaryOp(IntLiteral(1),>,BooleanLiteral(true))", 118))
+
+fix that code that make it accept the tesstcase:
+
+from AST import *
+from Visitor import *
+from Utils import Utils
+from StaticError import *
+from functools import reduce
+from typing import List, Union
+
+from StaticError import Type as StaticErrorType
+from AST import Type
+
+class FuntionType(Type):
+    def __init__(self, retType: Type = VoidType(), paramTypes: List[Type] = None):
+        self.retType = retType
+        self.paramTypes = paramTypes if paramTypes is not None else []
+
+    def __str__(self):
+        return "FuntionType"
+
+    def accept(self, v, param):
+        return v.visitFuntionType(self, param)
+
+class Struct:
+    def __str__(self):
+        return "Struct"
+
+class Attribute:
+    def __str__(self):
+        return "Attribute"
+
+class Symbol:
+    def __init__(self, name, mtype, value=None):
+        self.name = name
+        self.mtype = mtype
+        self.value = value
+
+    def __str__(self):
+        return "Symbol(" + str(self.name) + "," + str(self.mtype) + (
+            "" if self.value is None else "," + str(self.value)) + ")"
+
+class StaticChecker(BaseVisitor, Utils):
+
+    def __init__(self, ast):
+        self.ast = ast
+        self.list_type: List[Union[StructType, InterfaceType]] = []
+        self.list_function: List[FuncDecl] = [
+            FuncDecl("getInt", [], IntType(), Block([])),
+            FuncDecl("putInt", [ParamDecl("VOTIEN", IntType())], VoidType(), Block([])),
+            FuncDecl("putIntLn", [ParamDecl("VOTIEN", IntType())], VoidType(), Block([])),
+            FuncDecl("getFloat", [], FloatType(), Block([])),
+            FuncDecl("putFloat", [ParamDecl("f", FloatType())], VoidType(), Block([])),
+            FuncDecl("putFloatLn", [ParamDecl("f", FloatType())], VoidType(), Block([])),
+            FuncDecl("getBool", [], BoolType(), Block([])),
+            FuncDecl("putBool", [ParamDecl("b", BoolType())], VoidType(), Block([])),
+            FuncDecl("putBoolLn", [ParamDecl("b", BoolType())], VoidType(), Block([])),
+            FuncDecl("getString", [], StringType(), Block([])),
+            FuncDecl("putString", [ParamDecl("s", StringType())], VoidType(), Block([])),
+            FuncDecl("putStringLn", [ParamDecl("s", StringType())], VoidType(), Block([])),
+            FuncDecl("putLn", [], VoidType(), Block([]))
+        ]
+        self.function_current: FuncDecl = None
+
+    def check(self):
+        self.visit(self.ast, None)
+
+    def visitProgram(self, ast: Program, c: None):
+        # Process types (structs, interfaces) first.
+        self.list_type = reduce(
+            lambda acc, ele: ([self.visit(ele, acc)] + acc) if isinstance(ele, Type) else acc,
+            ast.decl,
+            []
+        )
+        # Process function declarations: built-ins + user functions.
+        self.list_function = self.list_function + list(filter(lambda item: isinstance(item, FuncDecl), ast.decl))
+        
+        # Process methods in structs.
+        def visitMethodDecl(mdecl: MethodDecl, st: StructType) -> None:
+            if st is None:
+                raise Undeclared(Struct(), mdecl.recType.name)
+            duplicate = reduce(lambda acc, m: m if acc is None and m.name == mdecl.metName else acc,
+                            st.methods if hasattr(st, "methods") and st.methods is not None else [], None)
+            if duplicate is not None:
+                raise Redeclared(Method(), mdecl.metName)
+            this_sym = Symbol("this", st)
+            param_syms = tuple(map(lambda p: self.visit(p, []), mdecl.params))
+            new_env = [[this_sym] + list(param_syms)]
+            self.visit(mdecl.body, new_env)
+            st.methods = (st.methods if hasattr(st, "methods") and st.methods is not None else []) + \
+                        [Symbol(mdecl.metName, mdecl.retType, mdecl)]
+            return None
+
+        _ = reduce(lambda _, m: visitMethodDecl(m,
+                                                self.lookup(m.recType.name, self.list_type, lambda x: x.name)),
+                filter(lambda item: isinstance(item, MethodDecl), ast.decl), None)
+
+        # Build global environment (from built-ins).
+        global_env: List[Symbol] = [
+            Symbol("getInt", FuntionType(IntType(), [])),
+            Symbol("putInt", FuntionType(VoidType(), [IntType()])),
+            Symbol("putIntLn", FuntionType(VoidType(), [IntType()])),
+            Symbol("getFloat", FuntionType(FloatType(), [])),
+            Symbol("putFloat", FuntionType(VoidType(), [FloatType()])),
+            Symbol("putFloatLn", FuntionType(VoidType(), [FloatType()])),
+            Symbol("getBool", FuntionType(BoolType(), [])),
+            Symbol("putBool", FuntionType(VoidType(), [BoolType()])),
+            Symbol("putBoolLn", FuntionType(VoidType(), [BoolType()])),
+            Symbol("getString", FuntionType(StringType(), [])),
+            Symbol("putString", FuntionType(VoidType(), [StringType()])),
+            Symbol("putStringLn", FuntionType(VoidType(), [StringType()])),
+            Symbol("putLn", FuntionType(VoidType(), []))
+        ]
+
+        # Now, process each declaration (variable, constant, function, etc.) one by one,
+        # updating the global environment in order.
+        for d in ast.decl:
+            # We assume all declarations are instances of Decl.
+            # The current environment is wrapped in a list.
+            res = self.visit(d, [global_env])
+            if isinstance(res, Symbol):
+                # Insert the new symbol at the front of the current scope.
+                global_env.insert(0, res)
+        self.global_env = global_env
+
+        return None
+
+    def visitStructType(self, ast: StructType, c: List[Union[StructType, InterfaceType]]) -> StructType:
+        res = self.lookup(ast.name, c, lambda x: x.name)
+        if res is not None:
+            raise Redeclared(Struct(), ast.name)
+        def visitElements(fields, ele):
+            duplicate = reduce(lambda acc, f: f if acc is None and f[0] == ele[0] else acc, fields, None)
+            if duplicate is not None:
+                raise Redeclared(Attribute(), ele[0])
+            new_type = self.visit(ele[1], None) if hasattr(ele[1], "accept") else ele[1]
+            return fields + [(ele[0], new_type)]
+        ast.elements = reduce(visitElements, ast.elements, [])
+        if not hasattr(ast, "methods") or ast.methods is None:
+            ast.methods = []
+        return ast
+
+    def visitPrototype(self, ast: Prototype, c: List[Prototype]) -> Prototype:
+        if self.lookup(ast.name, c, lambda x: x.name) is not None:
+            raise Redeclared(Prototype(), ast.name)
+        ast.params = tuple(map(lambda p: self.visit(p, []), ast.params))
+        if hasattr(ast.retType, "accept"):
+            ast.retType = self.visit(ast.retType, None)
+        return ast
+
+    def visitInterfaceType(self, ast: InterfaceType, c: List[Union[StructType, InterfaceType]]) -> InterfaceType:
+        res = self.lookup(ast.name, c, lambda x: x.name)
+        if res is not None:
+            raise Redeclared(StaticErrorType(), ast.name)
+        ast.methods = reduce(lambda acc, ele: [self.visit(ele, acc)] + acc, ast.methods, [])
+        return ast
+
+    def visitFuncDecl(self, ast: FuncDecl, c: List[List[Symbol]]) -> Symbol:
+        if self.lookup(ast.name, c[0], lambda x: x.name):
+            raise Redeclared(Function(), ast.name )
+        func_symbol = Symbol(ast.name,
+                             FuntionType(ast.retType, list(map(lambda p: p.parType, ast.params))),
+                             ast)
+        param_symbols = tuple(map(lambda p: self.visit(p, c[0]), ast.params))
+        new_env = [list(param_symbols)] + c
+        saved_func = self.function_current
+        self.function_current = ast
+        self.visit(ast.body, new_env)
+        self.function_current = saved_func
+        return func_symbol
+
+    def visitParamDecl(self, ast: ParamDecl, c: List[Symbol]) -> Symbol:
+        if self.lookup(ast.parName, c, lambda x: x.name):
+            raise Redeclared(Parameter(), ast.parName)
+        return Symbol(ast.parName, ast.parType, None)
+
+    def visitMethodDecl(self, ast: MethodDecl, c: List[List[Symbol]]) -> None:
+        if self.lookup(ast.metName, c[0], lambda x: x.name):
+            raise Redeclared(Method(), ast.metName)
+        this_sym = Symbol("this", ast.recType, None)
+        local_params = list(map(lambda p: self.visit(p, c[0]), ast.params))
+        new_env = [[this_sym] + local_params] + c
+        self.visit(ast.body, new_env)
+        return None
+
+    def lookup(self, name, lst, getName):
+        for item in lst:
+            if getName(item) == name:
+                return item
+        return None
+
+    def visitVarDecl(self, ast: VarDecl, c: List[List[Symbol]]) -> Symbol:
+        # Check for redeclaration in the current scope.
+        if self.lookup(ast.varName, c[0], lambda x: x.name) is not None:
+            raise Redeclared(Variable(), ast.varName )
+        
+        # Check for conflict with function names (built-in and user-defined).
+        if self.lookup(ast.varName, self.list_function, lambda x: x.name) is not None:
+            raise Redeclared(Variable(), ast.varName )
+        
+        # Process the initializer if it exists.
+        if ast.varInit is not None:
+            init_type = self.visit(ast.varInit, c)
+            if ast.varType is None:
+                # Infer type from the initializer.
+                var_type = init_type
+            else:
+                declared_type = ast.varType
+                # Allow conversion from IntType to FloatType.
+                if isinstance(declared_type, FloatType) and isinstance(init_type, IntType):
+                    var_type = declared_type
+                elif type(declared_type) != type(init_type):
+                    raise TypeMismatch("VarDecl(" + ast.varName + "," + str(ast.varType) + "," + str(ast.varInit) + ")")
+                else:
+                    var_type = declared_type
+        else:
+            # If no initializer, the declared type must be provided.
+            var_type = ast.varType
+
+        return Symbol(ast.varName, var_type, None)
+
+
+
+    def visitConstDecl(self, ast: ConstDecl, c: List[List[Symbol]]) -> Symbol:
+        if self.lookup(ast.constName, c[0], lambda x: x.name):
+            raise Redeclared(Constant(), ast.constName )
+        inferred_type = self.visit(ast.constInit, c)
+        return Symbol(ast.constName, inferred_type or ast.constType, None)
+
+    def visitBlock(self, ast: Block, c: List[List[Symbol]]) -> List[Symbol]:
+        # Start with a copy of the current (innermost) environment.
+        # If there is no environment, use an empty list.
+        env = c[0][:] if c and c[0] is not None else []
+        # Process each member (statement or declaration) sequentially.
+        for member in ast.member:
+            res = self.visit(member, [env])
+            # If the result is a Symbol (i.e. a declaration), add it to the front of the current scope.
+            if isinstance(res, Symbol):
+                env.insert(0, res)
+        # Return the updated environment so that later statements (or the caller) can see these declarations.
+        return env
+
+    # def visitBlock(self, ast: Block, c: List[List[Symbol]]) -> None:
+    #     def process_member(env, member):
+    #         res = self.visit(member, env)
+    #         return ([res] + env) if isinstance(res, Symbol) else env
+    #     new_env = reduce(process_member, ast.member, [[]] + c)
+    #     return None
+
+    def visitForBasic(self, ast: ForBasic, c: List[List[Symbol]]) -> None:
+        return self.visit(Block(ast.loop.member), c)
+
+    def visitForStep(self, ast: ForStep, c: List[List[Symbol]]) -> None:
+        return self.visit(Block([ast.init] + ast.loop.member + [ast.upda]), c)
+
+    def visitForEach(self, ast: ForEach, c: List[List[Symbol]]) -> None:
+        return self.visit(Block([VarDecl(ast.idx.name, None, None),
+                                 VarDecl(ast.value.name, None, None)] + ast.loop.member), c)
+
+    def visitId(self, ast: Id, c: List[List[Symbol]]) -> Type:
+        def lookup_acc(acc, scope):
+            return acc if acc is not None else self.lookup(ast.name, scope, lambda x: x.name)
+        res = reduce(lookup_acc, c, None)
+        if res is not None and not isinstance(res.mtype, FuntionType):
+            if isinstance(res.mtype, Id):
+                return self.visit(res.mtype, c)
+            return res.mtype
+        raise Undeclared(Identifier(), ast.name)
+
+    def visitFuncCall(self, ast: FuncCall, c: List[List[Symbol]]) -> Type:
+        def lookup_acc(acc, scope):
+            return acc if acc is not None else self.lookup(ast.funName, scope, lambda x: x.name)
+        res = reduce(lookup_acc, c, None)
+        if res is None or not isinstance(res.mtype, FuntionType):
+            raise Undeclared(Function(), ast.funName)
+        if len(ast.args) != len(res.mtype.paramTypes):
+            raise TypeMismatch(ast)
+        for arg, param_type in zip(ast.args, res.mtype.paramTypes):
+            arg_type = self.visit(arg, c)
+            if type(arg_type) != type(param_type):
+                if not (type(param_type) == FloatType and type(arg_type) == IntType):
+                    raise TypeMismatch(ast)
+        return res.mtype.retType
+
+    def visitFieldAccess(self, ast: FieldAccess, c: List[List[Symbol]]) -> Type:
+        type_receiver = self.visit(ast.receiver, c)
+        if isinstance(type_receiver, StructType):
+            def field_acc(acc, ft):
+                return ft[1] if acc is None and ft[0] == ast.field else acc
+            res = reduce(field_acc, type_receiver.elements, None)
+        else:
+            res = None
+        if res is None:
+            raise Undeclared(Field(), ast.field)
+        return res
+
+    def visitMethCall(self, ast: MethCall, c: List[List[Symbol]]) -> Type:
+        type_receiver = self.visit(ast.receiver, c)
+        if isinstance(type_receiver, StructType):
+            def meth_acc(acc, m):
+                return m if acc is None and m.name == ast.metName else acc
+            res = reduce(meth_acc, type_receiver.methods, None)
+        elif isinstance(type_receiver, InterfaceType):
+            def proto_acc(acc, proto):
+                return proto if acc is None and proto.name == ast.metName else acc
+            res = reduce(proto_acc, type_receiver.methods, None)
+        else:
+            res = None
+        if res is None:
+            raise Undeclared(Method(), ast.metName)
+        return res.mtype.retType
+
+    def visitIntLiteral(self, ast, param): 
+        return IntType()
+
+    def visitFloatLiteral(self, ast, param): 
+        return FloatType()
+
+    def visitBooleanLiteral(self, ast, param): 
+        return BoolType()
+
+    def visitStringLiteral(self, ast, param): 
+        return StringType()
+
+    def visitArrayLiteral(self, ast, param): 
+        return None
+
+    def visitStructLiteral(self, ast, param): 
+        return None
+
+    def visitNilLiteral(self, ast, param): 
+        return None
+
+    def visitReturn(self, ast: Return, c: List[List[Symbol]]) -> None:
+        ret_expr_type = VoidType()
+        if ast.expr is not None:
+            ret_expr_type = self.visit(ast.expr, c)
+        expected = self.function_current.retType
+        if isinstance(expected, VoidType) and ast.expr is not None:
+            raise TypeMismatch(ast)
+        if not isinstance(expected, VoidType) and ast.expr is None:
+            raise TypeMismatch(ast)
+        if type(expected) != type(ret_expr_type):
+            if not (type(expected)==FloatType and type(ret_expr_type)==IntType):
+                raise TypeMismatch(ast)
+        return None
+
+    def visitIf(self, ast: If, c: List[List[Symbol]]) -> None:
+        cond_type = self.visit(ast.expr, c)
+        if type(cond_type) != BoolType:
+            raise TypeMismatch(ast)
+        self.visit(ast.thenStmt, c)
+        if ast.elseStmt is not None:
+            self.visit(ast.elseStmt, c)
+        return None
+
+    def visitAssign(self, ast, param): 
+        return None
+
+    def visitContinue(self, ast, param): 
+        return None
+
+    def visitBreak(self, ast, param): 
+        return None
+
+    def visitBinaryOp(self, ast, param): 
+        return None
+
+    def visitUnaryOp(self, ast, param): 
+        return None
+
+    def visitArrayCell(self, ast, param): 
+        return None
+
